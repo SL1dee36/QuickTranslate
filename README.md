@@ -80,6 +80,3 @@ This project is licensed under the [MIT License](LICENSE).
 ## Contact
 
 *   [Sl1dee36](https://github.com/Sl1dee36)
-
-## Screenshots
-
