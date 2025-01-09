@@ -24,9 +24,21 @@ import keyboard
 import time
 import win32gui
 import win32process
+import os
 
 # Настройка логгера
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+def resource_path(relative_path):
+    # Получаем абсолютный путь к ресурсам.
+    try:
+        # PyInstaller создает временную папку в _MEIPASS
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.abspath(".")
+    return os.path.join(base_path, relative_path)
+
+path_to_the_images = resource_path('extension.png')
 
 class SettingsDialog(QDialog):
     """Диалог настроек."""
@@ -155,7 +167,7 @@ class TranslatorApp(QWidget):
         self.last_selected_text = ""
         self.user_buffer = ""
         self.is_window_active = False
-        self.setWindowIcon(QIcon("extension.png"))
+        self.setWindowIcon(QIcon(path_to_the_images))
         self.setWindowTitle("QuickTranslate")
         self.setGeometry(100, 100, self.window_width, self.window_height)
         self.setWindowFlag(Qt.WindowStaysOnTopHint) # Окно всегда сверху
@@ -182,7 +194,7 @@ class TranslatorApp(QWidget):
 
     def initTrayIcon(self):
         """Инициализация иконки в трее."""
-        self.tray_icon = QSystemTrayIcon(QIcon("extension.png"), self)  # Укажите путь к вашей иконке
+        self.tray_icon = QSystemTrayIcon(QIcon(path_to_the_images), self)  # Укажите путь к вашей иконке
         self.tray_menu = QMenu()
 
         # Действие для открытия окна настроек
