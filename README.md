@@ -30,8 +30,8 @@ QuickTranslate is a simple desktop application that allows you to quickly transl
 
 1.  **Clone the repository:**
     ```bash
-    git clone https://github.com/Sl1dee36/QuickTranslate.git  # Replace with your actual repository URL
-    cd your-repo-name
+    git clone https://github.com/Sl1dee36/QuickTranslate.git
+    cd QuickTranslate
     ```
 
 2.  **Install the required Python packages:**
