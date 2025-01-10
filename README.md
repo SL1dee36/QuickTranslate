@@ -2,6 +2,8 @@
 
 QuickTranslate is a simple desktop application that allows you to quickly translate selected text using Google Translate. It sits in your system tray and activates with a customizable hotkey. The translated text is displayed in a small window that appears near your cursor.
 
+[download latest version here.](https://github.com/SL1dee36/QuickTranslate/releases/)
+
 ## Features
 
 *   **Instant Translation:** Translates selected text from any application.
@@ -47,17 +49,17 @@ QuickTranslate is a simple desktop application that allows you to quickly transl
 ## Usage
 
 1.  The application will start in your system tray.
-2.  **Configure settings:** Right-click the tray icon and select "Настройки".
+2.  **Configure settings:** Right-click the tray icon and select "Settings".
     *   Set the source and destination languages.
     *   Set the desired window width and height.
-    *   Set the hotkey for translation. Click on the `Сочетание клавиш` field and press your desired keyboard shortcut.
+    *   Set the hotkey for translation. Click on the `Hotkey` field and press your desired keyboard shortcut.
 3.  **Translate text:**
     *   Select the text in any application.
     *   Press the assigned hotkey (default: `ctrl+b`).
     *   The translation will appear in a small window near your mouse cursor.
 4.  **Copy the translation:** Click on the translated text to copy it to your clipboard and close the translation window.
 5.  **Hide window:** Press ESC to close translation window.
-6.  **Exit the app:** Right-click the tray icon and select "Выход".
+6.  **Exit the app:** Right-click the tray icon and select "Exit".
 
 ## Configuration
 
