@@ -2,7 +2,7 @@
 
 QuickTranslate is a versatile desktop application designed to streamline your translation needs. It allows you to quickly translate selected text using either Google Translate or DeepL, and offers a range of customizable features. The application operates from your system tray and is activated with a customizable hotkey. The translated text is displayed in a small window that appears near your cursor.
 
-[Download the latest version here.](https://github.com/SL1dee36/QuickTranslate/releases/)
+![Static Badge](https://img.shields.io/badge/Download_Latest_QuickTranslate-blue?logo=Hack%20The%20Box)
 
 ## Features
 
