@@ -100,6 +100,14 @@ This project is licensed under the [MIT License](LICENSE).
 
 ## Screenshots
 
+![{9E21A9C1-FDD2-4017-86A3-B81846CDE2E0}](https://github.com/user-attachments/assets/35491cae-cf68-4fc5-a498-0ce62c9a5485)
+
+<details>
+    
+<summary>Previous versions</summary>
+    
 ![{1EE4999E-08EC-43EA-BF86-042484B9B678}](https://github.com/user-attachments/assets/c5b547c1-2003-4209-83ec-d5e61dcae9a3)
 
 ![{466299DB-E60E-44B9-B5B9-2876895E49C8}](https://github.com/user-attachments/assets/ee48eb9f-a9d4-429b-953e-c70b6c513bcf)    ![{583313B7-AD1F-4A20-A739-CDEC972847C0}](https://github.com/user-attachments/assets/2c481d11-edae-4dfb-a022-7565fda160b4)
+
+</details>
