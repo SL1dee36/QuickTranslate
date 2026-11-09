@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+*$py.class
+*.dist/
+*.build/
+dist/
+build/
+*.argosmodel
+*.tmp
+.idea/
+.vscode/
+

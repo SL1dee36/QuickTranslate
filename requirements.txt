@@ -4,3 +4,4 @@ pyautogui
 mouse
 keyboard
 PySide6
+argostranslate
