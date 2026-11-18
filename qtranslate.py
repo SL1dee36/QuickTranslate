@@ -33,7 +33,7 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QProgressDialog
 )
-from PySide6.QtCore import Qt, QObject, Signal, Slot, QSettings, QTimer, QMetaObject, QGenericArgument, QByteArray, QThread, QUrl, QRect, QSize
+from PySide6.QtCore import Qt, QObject, Signal, Slot, QSettings, QTimer, QMetaObject, QGenericArgument, QByteArray, QThread, QThreadPool, QRunnable, QUrl, QRect, QSize
 from PySide6.QtGui import QCursor, QIcon, QAction, QCloseEvent, QDesktopServices, QIconEngine, QPainter, QPixmap, QColor, QPalette
 from PySide6.QtSvg import QSvgRenderer
 
@@ -60,6 +60,7 @@ import time
 import win32gui
 import win32process
 import os
+import threading
 import webbrowser
 import offline_translator
 
@@ -237,7 +238,8 @@ translation_dict = {
         "software_version": "Version: 1.2.0",
         "copied_hint": "Translation copied to clipboard!",
         "saved_feedback": "Saved!",
-        "dismiss": "Dismiss"
+        "dismiss": "Dismiss",
+        "translating": "Translating..."
     },
     "Русский": {
         "settings": "Настройки",
@@ -286,7 +288,8 @@ translation_dict = {
         "software_version": "Версия программы: 1.2.0",
         "copied_hint": "Перевод скопирован в буфер обмена!",
         "saved_feedback": "Сохранено!",
-        "dismiss": "Скрыть"
+        "dismiss": "Скрыть",
+        "translating": "Перевод..."
     }
 }
 
@@ -1235,6 +1238,190 @@ class SettingsDialog(QDialog):
     def open_deepl_website(self):
         """Opens DeepL website in the default browser."""
         webbrowser.open("https://www.deepl.com/en/checkout")
+
+
+def _translate_google(google_translator, text, src, dest):
+    """Выполняет перевод через googletrans в текущем потоке."""
+    try:
+        if not google_translator:
+            return "Ошибка: googletrans не инициализирован."
+        translation = google_translator.translate(text, src=src, dest=dest)
+        return translation.text
+    except Exception as e:
+        return f"Ошибка перевода: {e}"
+
+
+def _translate_deepl(deepl_api_key, text, src, dest):
+    """Выполняет перевод через DeepL API в текущем потоке."""
+    try:
+        import deepl
+        translator_deepl = deepl.Translator(deepl_api_key)
+        translation = translator_deepl.translate_text(text, target_lang=dest, source_lang=src)
+        return translation.text
+    except Exception as e:
+        return f"Ошибка перевода: {e}"
+
+
+def _translate_offline(text, src, dest, offline_lock=None):
+    """Выполняет локальный офлайн-перевод Argos Translate."""
+    try:
+        if offline_lock is not None:
+            with offline_lock:
+                return offline_translator.translate_offline(text, src, dest)
+        return offline_translator.translate_offline(text, src, dest)
+    except Exception as e:
+        return f"Ошибка офлайн-перевода: {e}"
+
+
+def _is_foreign_text(text, source_lang, translator_type, google_translator):
+    """Проверяет, соответствует ли язык текста настроенному исходному языку."""
+    logging.info(f"Checking if text is in source language: {text}")
+    if not text or not isinstance(text, str):
+        logging.warning("No text provided for language detection or text is not a string.")
+        return False
+
+    if source_lang == "auto":
+        return True
+
+    if translator_type == "argos":
+        detected_lang = offline_translator.detect_offline(text)
+        return detected_lang == source_lang
+
+    try:
+        if not google_translator:
+            return True
+        detected = google_translator.detect(text)
+        if detected.lang == source_lang:
+            logging.info(f"Text is in source language: {source_lang}")
+            return True
+        logging.info(f"Text is not in source language, it's: {detected.lang}")
+        return False
+    except Exception as e:
+        logging.error(f"Error during language detection: {e}")
+        return False
+
+
+def _perform_translation(
+    text,
+    source_lang,
+    dest_lang,
+    default_dest_lang,
+    translator_type,
+    deepl_api_key,
+    google_translator,
+    offline_lock=None,
+):
+    """Выполняет определение языка и перевод без обращения к UI-объектам."""
+    logging.info(f"Translating text: {text}")
+    if not text or not isinstance(text, str):
+        logging.warning("No text provided for translation or text is not string.")
+        return None, "", ""
+
+    if dest_lang is None:
+        dest_lang = default_dest_lang
+
+    try:
+        if translator_type == "googletrans":
+            if not google_translator:
+                return "Ошибка: googletrans не инициализирован.", "", ""
+            result = google_translator.translate(text, src=source_lang, dest=dest_lang)
+            translation = result.text
+            detected_src = getattr(result, "src", None) or source_lang
+            src_lang_upper = str(detected_src).upper()
+            dest_lang_upper = dest_lang.upper()
+        elif translator_type == "deepl":
+            import deepl
+            translator_deepl = deepl.Translator(deepl_api_key)
+            deepl_src = None if source_lang == "auto" else source_lang
+            result = translator_deepl.translate_text(text, target_lang=dest_lang, source_lang=deepl_src)
+            translation = result.text
+            detected_src = getattr(result, "detected_source_lang", None) or source_lang
+            src_lang_upper = str(detected_src).upper()
+            dest_lang_upper = dest_lang.upper()
+        elif translator_type == "argos":
+            resolved_source_lang = (
+                offline_translator.detect_offline(text) if source_lang == "auto" else source_lang
+            )
+            translation = _translate_offline(text, resolved_source_lang, dest_lang, offline_lock)
+            src_lang_upper = resolved_source_lang.upper()
+            dest_lang_upper = dest_lang.upper()
+        else:
+            return "Выберите переводчика", "", ""
+
+        logging.info(f"Translation successful: {translation}")
+        return translation, src_lang_upper, dest_lang_upper
+    except Exception as e:
+        logging.error(f"Error during translation: {e}")
+        return f"Ошибка перевода: {e}", "", ""
+
+
+class TranslationWorkerSignals(QObject):
+    """Сигналы фонового воркера перевода для передачи результатов в UI-поток."""
+    started = Signal(int, str)
+    finished = Signal(int, str, object, str, str)
+
+
+class TranslationWorker(QRunnable):
+    """Асинхронная задача проверки языка и перевода текста в пуле потоков."""
+
+    def __init__(
+        self,
+        request_id,
+        text,
+        source_lang,
+        dest_lang,
+        default_dest_lang,
+        translator_type,
+        deepl_api_key,
+        google_translator,
+        check_foreign=False,
+        offline_lock=None,
+    ):
+        super().__init__()
+        self.signals = TranslationWorkerSignals()
+        self.request_id = request_id
+        self.text = text
+        self.source_lang = source_lang
+        self.dest_lang = dest_lang
+        self.default_dest_lang = default_dest_lang
+        self.translator_type = translator_type
+        self.deepl_api_key = deepl_api_key
+        self.google_translator = google_translator
+        self.check_foreign = check_foreign
+        self.offline_lock = offline_lock
+
+    def run(self):
+        if self.check_foreign:
+            if not _is_foreign_text(
+                self.text,
+                self.source_lang,
+                self.translator_type,
+                self.google_translator,
+            ):
+                self.signals.finished.emit(self.request_id, self.text, None, "", "")
+                return
+
+        self.signals.started.emit(self.request_id, self.text)
+
+        translation, src_lang, dest_lang_upper = _perform_translation(
+            text=self.text,
+            source_lang=self.source_lang,
+            dest_lang=self.dest_lang,
+            default_dest_lang=self.default_dest_lang,
+            translator_type=self.translator_type,
+            deepl_api_key=self.deepl_api_key,
+            google_translator=self.google_translator,
+            offline_lock=self.offline_lock,
+        )
+        self.signals.finished.emit(
+            self.request_id,
+            self.text,
+            translation,
+            src_lang,
+            dest_lang_upper,
+        )
+
+
 class TranslatorApp(QWidget):
     translation_requested = Signal()
     close_requested = Signal()
@@ -1281,9 +1468,21 @@ class TranslatorApp(QWidget):
         self.history = []
         self.history_size = history_size
 
+        # Async translation pool and request state
+        self.translation_pool = QThreadPool(self)
+        self._offline_lock = threading.Lock()
+        self._ui_request_id = 0
+        self._clipboard_request_id = 0
+        self._is_translating = False
+        self._last_checked_clipboard_text = ""
+
         self.hotkey = normalize_hotkey_to_latin(self.hotkey)
         self.translation_requested.connect(self.translate_selected_text)
         self.close_requested.connect(self.hide_window)
+        self._cleaned_up = False
+        app_instance = QApplication.instance()
+        if app_instance is not None:
+            app_instance.aboutToQuit.connect(self.cleanup)
 
         self.initUI()
         self.initTrayIcon()
@@ -1411,132 +1610,123 @@ class TranslatorApp(QWidget):
         self.tray_icon.showMessage("QuickTranslate", msg, QSystemTrayIcon.Information, 3500)
     
     def translate_google(self, text, src, dest):
-        try:
-             if not self.translator:
-                 return "Ошибка: googletrans не инициализирован."
-             translation = self.translator.translate(text, src=src, dest=dest)
-             return translation.text
-        except Exception as e:
-             return f"Ошибка перевода: {e}"
-    
+        return _translate_google(self.translator, text, src, dest)
+
     def translate_deepl(self, text, src, dest):
-        try:
-            import deepl
-            translator_deepl = deepl.Translator(self.deepl_api_key)
-            translation = translator_deepl.translate_text(text, target_lang=dest, source_lang=src)
-            return translation.text
-        except Exception as e:
-            return f"Ошибка перевода: {e}"
+        return _translate_deepl(self.deepl_api_key, text, src, dest)
 
     def translate_offline(self, text, src, dest):
-        try:
-            return offline_translator.translate_offline(text, src, dest)
-        except Exception as e:
-            return f"Ошибка офлайн-перевода: {e}"
+        return _translate_offline(text, src, dest, self._offline_lock)
 
-    def translate_text(self, text, dest_lang = None):
-        logging.info(f"Translating text: {text}")
-        if not text or not isinstance(text, str):
-            logging.warning("No text provided for translation or text is not string.")
-            return None
-
-        if self.translator_type == "argos":
-            if self.source_lang == "auto":
-                source_lang = offline_translator.detect_offline(text)
-            else:
-                source_lang = self.source_lang
-        else:
-            if self.source_lang == "auto":
-                try:
-                    if self.translator:
-                        detected = self.translator.detect(text)
-                        source_lang = detected.lang
-                    else:
-                        source_lang = "en"
-                except Exception as e:
-                    logging.error(f"Error during language detection: {e}")
-                    return f"Ошибка определения языка: {e}"
-            else:
-                source_lang = self.source_lang
-            
-        if dest_lang == None:
-             dest_lang = self.dest_lang
-        
-        try:
-            if self.translator_type == "googletrans":
-                 translation = self.translate_google(text, source_lang, dest_lang)
-            elif self.translator_type == "deepl":
-                  translation = self.translate_deepl(text, source_lang, dest_lang)
-            elif self.translator_type == "argos":
-                  translation = self.translate_offline(text, source_lang, dest_lang)
-            else:
-                 return "Выберите переводчика"
-            logging.info(f"Translation successful: {translation}")
-            
-            # Detect languages after translation for history
-            if self.translator_type == "argos":
-                src_lang = source_lang.upper()
-                dest_lang_upper = dest_lang.upper()
-            else:
-                if self.source_lang == "auto" and self.translator:
-                    try:
-                        detected_src = self.translator.detect(text)
-                        src_lang = detected_src.lang.upper()
-                    except Exception:
-                        src_lang = source_lang.upper()
-                else:
-                    src_lang = self.source_lang.upper()
-                
-                if dest_lang == self.dest_lang and self.translator:
-                    try:
-                        detected_dest = self.translator.detect(translation)
-                        dest_lang_upper = detected_dest.lang.upper()
-                    except Exception:
-                        dest_lang_upper = dest_lang.upper()
-                else:
-                    dest_lang_upper = dest_lang.upper()
-            
+    def translate_text(self, text, dest_lang=None):
+        """Синхронный перевод текста (для прямых вызовов вне UI-слотов)."""
+        translation, src_lang, dest_lang_upper = _perform_translation(
+            text=text,
+            source_lang=self.source_lang,
+            dest_lang=dest_lang,
+            default_dest_lang=self.dest_lang,
+            translator_type=self.translator_type,
+            deepl_api_key=self.deepl_api_key,
+            google_translator=self.translator,
+            offline_lock=self._offline_lock,
+        )
+        if translation and src_lang and dest_lang_upper:
             self.update_history(text, translation, src_lang, dest_lang_upper)
-            
-            return translation
-        except Exception as e:
-                logging.error(f"Error during translation: {e}")
-                return f"Ошибка перевода: {e}"
-    
+        return translation
+
+    def _start_async_translation(
+        self,
+        request_id,
+        text,
+        dest_lang,
+        check_foreign,
+        on_finished,
+        on_started=None,
+    ):
+        """Запускает перевод в пуле потоков со снимком текущих настроек."""
+        worker = TranslationWorker(
+            request_id=request_id,
+            text=text,
+            source_lang=self.source_lang,
+            dest_lang=dest_lang,
+            default_dest_lang=self.dest_lang,
+            translator_type=self.translator_type,
+            deepl_api_key=self.deepl_api_key,
+            google_translator=self.translator,
+            check_foreign=check_foreign,
+            offline_lock=self._offline_lock,
+        )
+        if on_started is not None:
+            worker.signals.started.connect(on_started)
+        worker.signals.finished.connect(on_finished)
+        self.translation_pool.start(worker)
+
     def update_history(self, original_text, translated_text, src_lang, dest_lang):
         self.history.append({"original": original_text, "translated": translated_text, "src_lang": src_lang, "dest_lang": dest_lang})
         if len(self.history) > self.history_size:
             self.history.pop(0)
 
-    @Slot()
+    @Slot(str)
     def show_translation(self, selected_text):
         logging.info(f"Attempting to show translation for: {selected_text}")
-        if selected_text and selected_text != self.last_selected_text:
-            if self.is_foreign_text(selected_text):
-                self.last_selected_text = selected_text
-                self.show_window()
-                self.flash_window()  # Flash the window
-                QTimer.singleShot(100, lambda: self._show_translation(selected_text))
-            else:
-                logging.info("Selected text is not in the source language.")
+        if selected_text and (not self.isVisible() or selected_text != self.last_selected_text):
+            self._ui_request_id += 1
+            request_id = self._ui_request_id
+            self._start_async_translation(
+                request_id=request_id,
+                text=selected_text,
+                dest_lang=None,
+                check_foreign=True,
+                on_started=self._on_ui_translation_started,
+                on_finished=self._on_ui_translation_finished,
+            )
         else:
             logging.info("Selected text is same as last selected or is empty.")
-    
-    def _show_translation(self, selected_text):
-        translated_text = self.translate_text(selected_text)
+
+    @Slot(int, str)
+    def _on_ui_translation_started(self, request_id, selected_text):
+        if request_id != self._ui_request_id:
+            return
+        self.last_selected_text = selected_text
+        self._is_translating = True
+        translating_text = self.translation_dict.get(self.ui_lang, {}).get("translating", "Translating...")
+        self.text_edit.setText(translating_text)
+        self.show_window()
+        self.flash_window()
+        self.adjust_window_position()
+
+    @Slot(int, str, object, str, str)
+    def _on_ui_translation_finished(self, request_id, original_text, translated_text, src_lang, dest_lang):
+        if translated_text is None:
+            logging.info("Selected text is not in the source language.")
+            return
+        if request_id != self._ui_request_id:
+            return
+        self._is_translating = False
+        if src_lang and dest_lang:
+            self.update_history(original_text, translated_text, src_lang, dest_lang)
         if translated_text:
             self.text_edit.setText(translated_text)
-            self.adjust_window_position()  # Регулировать положение окна
-    
+            self.adjust_window_position()
+
     @Slot()
     def update_additional_translation(self):
-         selected_text = self.last_selected_text
-         if selected_text:
+        selected_text = self.last_selected_text
+        if selected_text:
             dest_lang = self.additional_lang_combo.currentData()
-            translated_text = self.translate_text(selected_text, dest_lang)
-            if translated_text:
-                 self.text_edit.setText(translated_text)
-                 logging.info(f"Additional translation requested for: {selected_text}, to {dest_lang}")
+            self._ui_request_id += 1
+            request_id = self._ui_request_id
+            self._is_translating = True
+            translating_text = self.translation_dict.get(self.ui_lang, {}).get("translating", "Translating...")
+            self.text_edit.setText(translating_text)
+            logging.info(f"Additional translation requested for: {selected_text}, to {dest_lang}")
+            self._start_async_translation(
+                request_id=request_id,
+                text=selected_text,
+                dest_lang=dest_lang,
+                check_foreign=False,
+                on_finished=self._on_ui_translation_finished,
+            )
     
     def flash_window(self):
          """Моргает окно."""
@@ -1546,8 +1736,18 @@ class TranslatorApp(QWidget):
             QTimer.singleShot(100, lambda: self.setWindowOpacity(original_opacity))
     
     def open_history(self):
-          history_dialog = HistoryDialog(self, self.history)
-          history_dialog.exec()
+        """Открывает немодальный диалог истории переводов."""
+        existing = getattr(self, "history_dialog", None)
+        if existing is not None:
+            existing.close()
+        dialog = HistoryDialog(self, self.history)
+        dialog.setModal(False)
+        dialog.setAttribute(Qt.WA_DeleteOnClose, True)
+        dialog.destroyed.connect(lambda: setattr(self, "history_dialog", None))
+        self.history_dialog = dialog
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
     
     def adjust_window_position(self):
         """Регулировка положения окна под курсором мыши."""
@@ -1557,11 +1757,13 @@ class TranslatorApp(QWidget):
 
     def text_clicked(self, event):
         """Обработка клика мыши по тексту для копирования перевода."""
-        translated_text = self.text_edit.toPlainText()
-        if translated_text:
-            self.copy_translation(translated_text)
-        logging.info("Translation copied to clipboard.")
-        time.sleep(1)
+        if not self._is_translating:
+            translated_text = self.text_edit.toPlainText()
+            if translated_text:
+                self.copy_translation(translated_text)
+                logging.info("Translation copied to clipboard.")
+                QTimer.singleShot(1000, self.hide_window)
+                return
         self.hide_window()
 
     def copy_translation(self, translated_text):
@@ -1572,29 +1774,7 @@ class TranslatorApp(QWidget):
 
     def is_foreign_text(self, text):
         """Проверка, является ли текст иностранным."""
-        logging.info(f"Checking if text is in source language: {text}")
-        if text and isinstance(text, str):
-            if self.translator_type == "argos":
-                if self.source_lang == "auto":
-                    return True
-                detected_lang = offline_translator.detect_offline(text)
-                return detected_lang == self.source_lang
-            try:
-                if not self.translator:
-                    return True
-                detected = self.translator.detect(text)
-                if detected.lang == self.source_lang or self.source_lang == "auto":
-                    logging.info(f"Text is in source language: {self.source_lang}")
-                    return True
-                else:
-                    logging.info(f"Text is not in source language, it's: {detected.lang}")
-                    return False
-            except Exception as e:
-                logging.error(f"Error during language detection: {e}")
-                return False
-        else:
-            logging.warning("No text provided for language detection or text is not a string.")
-            return False
+        return _is_foreign_text(text, self.source_lang, self.translator_type, self.translator)
 
     @Slot()
     def translate_selected_text(self):
@@ -1655,6 +1835,8 @@ class TranslatorApp(QWidget):
 
         # Обновляем размеры окна
         self.resize(self.window_width, self.window_height)
+        # Сбрасываем кэш последнего текста, чтобы повторный перевод применил новые настройки
+        self.last_selected_text = ""
         # Переназначаем горячую клавишу
         self.initHotkey(self.hotkey)
         self.retranslate_ui()
@@ -1662,9 +1844,20 @@ class TranslatorApp(QWidget):
         logging.info("Settings applied successfully.")
 
     def open_settings(self):
-        """Открывает диалог настроек."""
-        settings_dialog = SettingsDialog(self)
-        settings_dialog.exec()
+        """Открывает немодальный диалог настроек, не блокируя окно перевода."""
+        existing = getattr(self, "settings_dialog", None)
+        if existing is not None and existing.isVisible():
+            existing.raise_()
+            existing.activateWindow()
+            return
+        dialog = SettingsDialog(self)
+        dialog.setModal(False)
+        dialog.setAttribute(Qt.WA_DeleteOnClose, True)
+        dialog.destroyed.connect(lambda: setattr(self, "settings_dialog", None))
+        self.settings_dialog = dialog
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
     
     def get_autorun(self):
         import winreg
@@ -1679,10 +1872,28 @@ class TranslatorApp(QWidget):
             return False
 
 
+    @Slot()
+    def cleanup(self):
+        """Освобождает ресурсы и снимает глобальные хуки при завершении приложения."""
+        if self._cleaned_up:
+            return
+        self._cleaned_up = True
+        try:
+            keyboard.unhook_all()
+            logging.info("Keyboard hooks unhooked.")
+        except Exception as e:
+            logging.warning(f"Error unhooking keyboard hooks: {e}")
+        if hasattr(self, 'clipboard_timer'):
+            self.clipboard_timer.stop()
+        self.translation_pool.clear()
+        self.translation_pool.waitForDone(1000)
+        if hasattr(self, 'tray_icon'):
+            self.tray_icon.hide()
+
     def close_app(self):
         """Закрывает приложение."""
         logging.info("Application close requested.")
-        self.tray_icon.hide()  # Скрываем иконку перед закрытием
+        self.cleanup()
         QApplication.quit()
         
     def show_window(self):
@@ -1690,7 +1901,8 @@ class TranslatorApp(QWidget):
         self.activateWindow()
     
     def hide_window(self):
-         self.hide()
+        self.last_selected_text = ""
+        self.hide()
     
     def closeEvent(self, event: QCloseEvent):
         """Переопределяем событие закрытия окна."""
@@ -1730,13 +1942,37 @@ class TranslatorApp(QWidget):
     
     def check_clipboard_change(self):
         new_clipboard_text = self.clipboard.text()
-        if new_clipboard_text and new_clipboard_text != self.user_buffer and new_clipboard_text != self.last_selected_text:
-             if self.is_foreign_text(new_clipboard_text):
-                   self.user_buffer = new_clipboard_text
-                   translated_text = self.translate_text(new_clipboard_text)
-                   if translated_text:
-                       self.copy_translation(translated_text)
-                       logging.info("Text from clipboard has been translated and replaced")
+        if (
+            new_clipboard_text
+            and new_clipboard_text != self.user_buffer
+            and new_clipboard_text != self.last_selected_text
+            and new_clipboard_text != self._last_checked_clipboard_text
+        ):
+            self._last_checked_clipboard_text = new_clipboard_text
+            self._clipboard_request_id += 1
+            request_id = self._clipboard_request_id
+            self._start_async_translation(
+                request_id=request_id,
+                text=new_clipboard_text,
+                dest_lang=None,
+                check_foreign=True,
+                on_finished=self._on_clipboard_translation_finished,
+            )
+
+    @Slot(int, str, object, str, str)
+    def _on_clipboard_translation_finished(self, request_id, original_text, translated_text, src_lang, dest_lang):
+        if translated_text is None:
+            return
+        if request_id != self._clipboard_request_id:
+            return
+        if self.clipboard.text() != original_text:
+            return
+        self.user_buffer = original_text
+        if src_lang and dest_lang:
+            self.update_history(original_text, translated_text, src_lang, dest_lang)
+        self._last_checked_clipboard_text = translated_text
+        self.copy_translation(translated_text)
+        logging.info("Text from clipboard has been translated and replaced")
 
     def set_autorun(self, enabled):
             import winreg
@@ -1751,11 +1987,6 @@ class TranslatorApp(QWidget):
                  pass
             finally:
                 winreg.CloseKey(key)
-
-    def __del__(self):
-        """Деструктор класса для отключения хуков."""
-        keyboard.unhook_all()
-        logging.info("Keyboard hooks unhooked.")
 
 
 if __name__ == '__main__':
